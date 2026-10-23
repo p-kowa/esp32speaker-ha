@@ -1,0 +1,14 @@
+{
+  "domain": "esp32speaker_integration",
+  "name": "Esp32Speaker Integration",
+  "codeowners": [
+    "@p-kowa"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/p-kowa/esp32speaker-ha",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/p-kowa/esp32speaker-ha/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
