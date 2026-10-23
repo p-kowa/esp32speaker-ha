@@ -5,8 +5,17 @@ from logging import Logger, getLogger
 LOGGER: Logger = getLogger(__package__)
 
 DOMAIN = "esp32speaker_integration"
-ATTRIBUTION = "Data provided by http://jsonplaceholder.typicode.com/"
+CONF_DEVICE_ID = "device_id"
+CONF_POWER_ENTITY = "power_entity"
+CONF_TOPIC_PREFIX = "topic_prefix"
+CONF_ENTITIES = "entities"
 
-CONF_UPDATE_INTERVAL_HOURS = "update_interval_hours"
-
-DEFAULT_UPDATE_INTERVAL_HOURS = 1.0
+ENTITY_SUFFIXES = {
+	"power": "power",
+	"volume": "volume",
+	"station": "station",
+	"title": "title",
+	"radio": "station_select",
+	"sd": "sd_select",
+	"announcing": "announcing",
+}

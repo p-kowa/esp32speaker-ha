@@ -1,53 +1,35 @@
-"""Tests for Home Assistant 2026.8 config-entry-scoped device ownership."""
-
-from unittest.mock import AsyncMock
+"""Verify the helper links to, but never owns, the MQTT device."""
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.esp32speaker_integration.const import DOMAIN
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+from .conftest import SOURCE_ENTITIES
 
 
-async def test_entry_owns_its_own_device(init_integration: MockConfigEntry, hass: HomeAssistant) -> None:
-    """A loaded entry registers exactly one device, owned by that entry."""
-    assert init_integration.state is ConfigEntryState.LOADED
-
-    devices = dr.async_entries_for_config_entry(dr.async_get(hass), init_integration.entry_id)
-
-    assert len(devices) == 1
-    assert devices[0].config_entry_id == init_integration.entry_id
-    assert devices[0].model == "Blueprint Air Purifier"
-
-
-async def test_two_entries_get_separate_devices(
-    hass: HomeAssistant,
-    mock_api: AsyncMock,
-    init_integration: MockConfigEntry,
+async def test_mqtt_keeps_device_ownership(
+    hass: HomeAssistant, init_integration: MockConfigEntry, mqtt_speaker: MockConfigEntry
 ) -> None:
-    """Two entries never share a device, and entry-scoped lookups keep them apart."""
-    second_entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="second",
-        unique_id="second",
-        data={CONF_USERNAME: "second", CONF_PASSWORD: "secret"},
-    )
-    second_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(second_entry.entry_id)
+    """No duplicate device is created and the existing one stays MQTT-owned."""
+    registry = er.async_get(hass)
+    source = registry.async_get(SOURCE_ENTITIES["power"])
+    player = er.async_entries_for_config_entry(registry, init_integration.entry_id)[0]
+    assert init_integration.state is ConfigEntryState.LOADED
+    assert player.device_id == source.device_id
+    assert dr.async_get(hass).async_get(source.device_id).config_entry_id == mqtt_speaker.entry_id
+    assert not dr.async_entries_for_config_entry(dr.async_get(hass), init_integration.entry_id)
+    assert player.unique_id == "F88B419FC114_player"
+
+
+async def test_unload_preserves_mqtt_entities(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """Unloading the helper does not remove or control source entities."""
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
     await hass.async_block_till_done()
-
-    device_registry = dr.async_get(hass)
-    first_device = device_registry.async_get_device_by_identifier(
-        (DOMAIN, init_integration.entry_id),
-        init_integration.entry_id,
-    )
-    second_device = device_registry.async_get_device_by_identifier(
-        (DOMAIN, second_entry.entry_id),
-        second_entry.entry_id,
-    )
-
-    assert first_device is not None
-    assert second_device is not None
-    assert first_device.id != second_device.id
+    assert init_integration.state is ConfigEntryState.NOT_LOADED
+    hass.states.async_set(SOURCE_ENTITIES["power"], "off")
+    await hass.async_block_till_done()
+    assert hass.states.get(SOURCE_ENTITIES["power"]).state == "off"

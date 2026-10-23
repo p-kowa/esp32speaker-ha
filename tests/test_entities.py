@@ -1,81 +1,104 @@
-"""Tests for the entities the example integration exposes."""
+"""Test the media player through Home Assistant states and service calls."""
 
 from unittest.mock import AsyncMock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
-from custom_components.esp32speaker_integration.api import Esp32SpeakerApiClientError
-from homeassistant.components.fan import DOMAIN as FAN_DOMAIN, SERVICE_SET_PERCENTAGE
-from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE
+from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
+from .conftest import SOURCE_ENTITIES, TOPIC
 
-async def test_entities_read_the_coordinator_payload(
-    init_integration: MockConfigEntry,
+
+def player_id(hass: HomeAssistant, entry: MockConfigEntry) -> str:
+    """Look up the media player without depending on a generated entity name."""
+    return er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)[0].entity_id
+
+
+async def test_live_state(hass: HomeAssistant, init_integration: MockConfigEntry) -> None:
+    """Metadata and volume track the source entities without polling."""
+    entity_id = player_id(hass, init_integration)
+    state = hass.states.get(entity_id)
+    assert state.state == "playing"
+    assert state.attributes["volume_level"] == pytest.approx(3 / 21)
+    assert state.attributes["media_title"] == "Current song"
+    assert state.attributes["source_list"] == ["Radio: SWR3", "Radio: DLF", "SD: /song.mp3"]
+    assert not state.attributes["supported_features"] & MediaPlayerEntityFeature.PAUSE
+    assert not state.attributes["supported_features"] & MediaPlayerEntityFeature.SEEK
+    hass.states.async_set(SOURCE_ENTITIES["power"], "off")
+    hass.states.async_set(SOURCE_ENTITIES["volume"], "21")
+    hass.states.async_set(SOURCE_ENTITIES["title"], "New title")
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state.state == "idle"
+    assert state.attributes["volume_level"] == 1
+    assert state.attributes["media_title"] == "New title"
+
+
+async def test_controls(hass: HomeAssistant, init_integration: MockConfigEntry) -> None:
+    """Commands go through the existing switch, number and select platforms."""
+    switch_calls = async_mock_service(hass, "switch", "turn_off")
+    number_calls = async_mock_service(hass, "number", "set_value")
+    select_calls = async_mock_service(hass, "select", "select_option")
+    target = {"entity_id": player_id(hass, init_integration)}
+    await hass.services.async_call("media_player", "media_stop", target, blocking=True)
+    await hass.services.async_call(
+        "media_player", "volume_set", {**target, "volume_level": 0.5}, blocking=True
+    )
+    await hass.services.async_call(
+        "media_player", "select_source", {**target, "source": "SD: /song.mp3"}, blocking=True
+    )
+    assert switch_calls[0].data["entity_id"] == SOURCE_ENTITIES["power"]
+    assert number_calls[0].data["value"] == 10
+    assert select_calls[0].data["entity_id"] == SOURCE_ENTITIES["sd"]
+    assert select_calls[0].data["option"] == "/song.mp3"
+    assert hass.states.get(target["entity_id"]).state == "playing"
+
+
+@pytest.mark.parametrize("announce", [False, True])
+async def test_play_url(
     hass: HomeAssistant,
-) -> None:
-    """Every entity takes its state from the payload the client built."""
-    # seed = 1 * 47 + 1 * 13 = 60
-    assert hass.states.get("sensor.demo_filter_life_remaining").state == "40"
-    assert hass.states.get("binary_sensor.demo_filter_replacement_needed").state == "off"
-    assert hass.states.get("select.demo_fan_speed").state == "auto"
-    assert hass.states.get("switch.demo_child_lock").state == "off"
-    assert hass.states.get("number.demo_target_humidity").state == "50.0"
-
-
-async def test_fan_is_the_main_feature_entity(
     init_integration: MockConfigEntry,
-    hass: HomeAssistant,
+    mqtt_publish: AsyncMock,
+    announce: bool,
 ) -> None:
-    """The fan carries the device name alone, not a repeated name."""
-    state = hass.states.get("fan.demo")
+    """URL commands use the correct topic and must never be retained."""
+    await hass.services.async_call(
+        "media_player",
+        "play_media",
+        {
+            "entity_id": player_id(hass, init_integration),
+            "media_content_id": "http://example.com/test.mp3",
+            "media_content_type": "music",
+            "announce": announce,
+        },
+        blocking=True,
+    )
+    command = "announce" if announce else "station_url"
+    mqtt_publish.assert_awaited_once_with(
+        hass, f"{TOPIC}/set/{command}", "http://example.com/test.mp3", qos=0, retain=False
+    )
 
-    assert state is not None
-    assert state.attributes["friendly_name"] == "demo"
 
-
-async def test_led_display_is_disabled_by_default(
-    init_integration: MockConfigEntry,
-    hass: HomeAssistant,
+@pytest.mark.parametrize("source_state", ["unavailable", "unknown"])
+async def test_missing_source(
+    hass: HomeAssistant, init_integration: MockConfigEntry, source_state: str
 ) -> None:
-    """The noisy diagnostic switch is not created until the user enables it."""
-    entry = er.async_get(hass).async_get("switch.demo_led_display")
+    """Offline and unknown source states are not presented as stopped playback."""
+    hass.states.async_set(SOURCE_ENTITIES["power"], source_state)
+    await hass.async_block_till_done()
+    assert hass.states.get(player_id(hass, init_integration)).state == source_state
 
-    assert entry is not None
-    assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
 
-
-async def test_write_failure_raises_translated_error(
-    init_integration: MockConfigEntry,
-    hass: HomeAssistant,
-    mock_api: AsyncMock,
-) -> None:
-    """A failing device call surfaces as a translated HomeAssistantError."""
-    mock_api.side_effect = Esp32SpeakerApiClientError("boom")
-
-    with pytest.raises(HomeAssistantError) as err:
+async def test_invalid_source(hass: HomeAssistant, init_integration: MockConfigEntry) -> None:
+    """Reject sources not advertised by the current selects."""
+    with pytest.raises(ServiceValidationError):
         await hass.services.async_call(
-            FAN_DOMAIN,
-            SERVICE_SET_PERCENTAGE,
-            {ATTR_ENTITY_ID: "fan.demo", "percentage": 100},
+            "media_player",
+            "select_source",
+            {"entity_id": player_id(hass, init_integration), "source": "not a station"},
             blocking=True,
         )
-
-    assert err.value.translation_key == "fan_speed_set_failed"
-
-
-async def test_entities_go_unavailable_when_the_poll_fails(
-    init_integration: MockConfigEntry,
-    hass: HomeAssistant,
-    mock_api: AsyncMock,
-) -> None:
-    """A failed refresh makes the entities unavailable rather than stale."""
-    mock_api.side_effect = Esp32SpeakerApiClientError("boom")
-
-    await init_integration.runtime_data.coordinator.async_refresh()
-    await hass.async_block_till_done()
-
-    assert hass.states.get("sensor.demo_filter_life_remaining").state == STATE_UNAVAILABLE

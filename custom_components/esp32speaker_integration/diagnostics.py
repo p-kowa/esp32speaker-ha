@@ -19,6 +19,12 @@ TO_REDACT = {
     CONF_USERNAME,
     "api_key",
     "serial_number",
+    "device_id",
+    "entities",
+    "power_entity",
+    "topic_prefix",
+    "title",
+    "station",
     "token",
 }
 
@@ -48,6 +54,12 @@ async def async_get_config_entry_diagnostics(
             "last_update_success": coordinator.last_update_success,
             "update_interval": str(coordinator.update_interval),
             "last_exception": str(coordinator.last_exception) if coordinator.last_exception else None,
-            "data": async_redact_data(coordinator.data, TO_REDACT),
+            "data": async_redact_data(
+                {
+                    key: state.state if state is not None else None
+                    for key, state in coordinator.data.items()
+                },
+                TO_REDACT,
+            ),
         },
     }

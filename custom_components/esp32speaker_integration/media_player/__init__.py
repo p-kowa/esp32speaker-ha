@@ -1,16 +1,15 @@
-"""Switch platform for esp32speaker_integration."""
+"""Media player platform for existing ESP32 Speaker MQTT devices."""
 
 from typing import TYPE_CHECKING
 
-from .example_switch import ENTITY_DESCRIPTIONS, Esp32SpeakerSwitch
-
-# Acts on the device: the coordinator does not limit outbound calls.
-PARALLEL_UPDATES = 1
+from .speaker import ENTITY_DESCRIPTIONS, Esp32SpeakerMediaPlayer
 
 if TYPE_CHECKING:
     from custom_components.esp32speaker_integration.data import Esp32SpeakerConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -18,7 +17,8 @@ async def async_setup_entry(
     entry: Esp32SpeakerConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the switch platform."""
+    """Create one media player per configured speaker."""
     async_add_entities(
-        Esp32SpeakerSwitch(entry.runtime_data.coordinator, description) for description in ENTITY_DESCRIPTIONS
+        Esp32SpeakerMediaPlayer(entry.runtime_data.coordinator, description)
+        for description in ENTITY_DESCRIPTIONS
     )
